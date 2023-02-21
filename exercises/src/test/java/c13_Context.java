@@ -1,11 +1,14 @@
 import org.junit.jupiter.api.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 import reactor.test.StepVerifier;
 import reactor.util.context.Context;
+import reactor.util.context.ContextView;
 
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 /**
  * Often we might require state when working with complex streams. Reactor offers powerful context mechanism to share
@@ -32,7 +35,10 @@ public class c13_Context extends ContextBase {
      */
     public Mono<Message> messageHandler(String payload) {
         //todo: do your changes withing this method
-        return Mono.just(new Message("set correlation_id from context here", payload));
+        return Mono.deferContextual(contextView -> {
+            String o = contextView.get(HTTP_CORRELATION_ID);
+            return Mono.just(new Message(o, payload));
+        });
     }
 
     @Test
@@ -55,7 +61,7 @@ public class c13_Context extends ContextBase {
         Mono<Void> repeat = Mono.deferContextual(ctx -> {
             ctx.get(AtomicInteger.class).incrementAndGet();
             return openConnection();
-        });
+        }).contextWrite(Context.of(AtomicInteger.class, new AtomicInteger(0)));
         //todo: change this line only
         ;
 
@@ -79,10 +85,25 @@ public class c13_Context extends ContextBase {
         AtomicInteger pageWithError = new AtomicInteger(); //todo: set this field when error occurs
 
         //todo: start from here
-        Flux<Integer> results = getPage(0)
-                .flatMapMany(Page::getResult)
-                .repeat(10)
-                .doOnNext(i -> System.out.println("Received: " + i));
+        Flux<Integer> results = Mono.deferContextual(ctx -> getPage(ctx.get(AtomicInteger.class).get()))
+                                        .doOnEach(s -> {
+                                            if (s.getType() == SignalType.ON_NEXT) {
+                                                s.getContextView().get(AtomicInteger.class).incrementAndGet();
+                                            } else if (s.getType() == SignalType.ON_ERROR) {
+                                                pageWithError.set(s.getContextView().get(AtomicInteger.class).getAndIncrement());
+                                            }
+                                        })
+                                        .onErrorResume(e -> Mono.empty())
+                                        .flatMapMany(Page::getResult)
+                                        .repeat(10)
+                                        .doOnNext(s -> System.out.println("Received: " + s))
+                                        .contextWrite(Context.of(AtomicInteger.class, new AtomicInteger(0)));
+
+
+//        Flux<Integer> results = getPage(0)
+//                .flatMapMany(Page::getResult)
+//                .repeat(10)
+//                .doOnNext(i -> System.out.println("Received: " + i));
 
 
         //don't change this code
